@@ -7,11 +7,11 @@ define compile_run
 endef
 
 all: test/main.cpp
-	$(call compile_run,,-O3)
 	$(call compile_run,.debug,-g3)
-	$(call compile_run,.address,-g3   -fsanitize=address  )
 	$(call compile_run,.thread,-g3    -fsanitize=thread   )
+	$(call compile_run,.address,-g3   -fsanitize=address  )
 	$(call compile_run,.undefined,-g3 -fsanitize=undefined)
+	$(call compile_run,,-O3)
 	@echo PASSED
 
 clean:

@@ -8,6 +8,7 @@
 
 #include "shri314/utils/ScopedAction.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <functional>
@@ -18,363 +19,387 @@
 namespace shri314::timer
 {
 
-struct Timer
+class Timer
 {
 public:
-    struct Token;
-
-private:
-    struct Entry;
-
+    class Token;
     using Clock = std::chrono::steady_clock;
     using Duration = Clock::duration;
     using TimePoint = std::chrono::time_point<Clock>;
-    using ScheduledTasks = std::multimap<TimePoint, std::shared_ptr<Entry>>;
 
+private:
+    struct Entry;
+    struct EntryLocator;
+    using ScheduledTasks = std::multimap<TimePoint, Entry>;
+
+private:
     struct Entry
+    {
+        //friend class Timer;
+
+        template<class FuncT>
+        explicit
+        Entry(FuncT&& callback, Duration repeat_interval)
+            : m_callback(std::move(callback))
+            , m_repeat_interval(std::move(repeat_interval))
+        {
+        }
+
+        Duration repeat_interval() const
+        {
+            return m_repeat_interval;
+        }
+
+        bool is_repeating() const
+        {
+            return m_repeat_interval != Duration::zero();
+        }
+
+        void link_locator(ScheduledTasks::iterator pos)
+        {
+            if (!m_locator)
+            {
+                m_locator = std::make_shared<EntryLocator>(pos);
+            }
+            else
+            {
+                m_locator->set_pos(pos);
+            }
+        }
+
+        void del_locator()
+        {
+            m_locator->invalidate();
+            m_locator.reset();
+        }
+
+        void safe_invoke()
+        {
+            try
+            {
+                m_callback();
+            }
+            catch(...)
+            {
+                // swallow exception from callbacks
+            }
+        }
+
+        Token get_token(Timer* owner)
+        {
+            return Token{owner, m_locator};
+        }
+
+    private:
+        std::function<void()> m_callback;
+        Duration m_repeat_interval;
+        std::shared_ptr<EntryLocator> m_locator;
+    };
+
+
+
+    struct EntryLocator
     {
     public:
         friend class Timer;
 
-        template<class FuncT>
         explicit
-        Entry(Timer* owner, FuncT&& callback, Duration every);
+        EntryLocator(ScheduledTasks::iterator pos)
+            : m_pos{pos}
+        {
+        }
 
-        Entry(const Entry&) = delete;
-        Entry& operator=(const Entry&) = delete;
-        Entry(Entry&&) = delete;
-        Entry& operator=(Entry&&) = delete;
+        EntryLocator(const EntryLocator&) = delete;
+        EntryLocator& operator=(const EntryLocator&) = delete;
+        EntryLocator(EntryLocator&&) = delete;
+        EntryLocator& operator=(EntryLocator&&) = delete;
 
-        inline void link_self(ScheduledTasks::iterator pos);
-        inline void cancel_self();
-        inline void safe_invoke();
-        inline bool is_repeating() const;
-        Duration repeat_duration() const;
+        void set_pos(ScheduledTasks::iterator pos)
+        {
+            // a lock is held
+            m_pos = pos;
+        }
+
+        ScheduledTasks::iterator get_pos() const
+        {
+            // a lock is held
+            return m_pos;
+        }
+
+        bool is_valid() const
+        {
+            return m_is_valid;
+        }
+
+        void invalidate()
+        {
+            m_is_valid = false;
+        }
+
+    private:
+        ScheduledTasks::iterator m_pos;
+        std::atomic_bool m_is_valid{true};
+    };
+
+
+public:
+    class [[nodiscard]] Token
+    {
+    public:
+        friend class Timer;
+
+        inline bool cancel()
+        {
+            if (auto loc_sp = m_loc_wp.lock())
+            {
+                return m_owner->cancel_by(*loc_sp);
+            }
+
+            return false;
+        }
+
+        Token() = default;
+        Token(const Token&) = delete;
+        Token& operator=(const Token&) = delete;
+
+        Token(Token&&) = default;
+        Token& operator=(Token&&) = default;
+
+        ~Token()
+        {
+            this->cancel();
+        }
+
+        bool expired() const
+        {
+            if (auto loc_sp = m_loc_wp.lock())
+            {
+                return !loc_sp->is_valid();
+            }
+
+            return true;
+        }
+
+    private:
+        explicit
+        Token(Timer* owner, std::weak_ptr<EntryLocator> loc_wp)
+            : m_owner(owner)
+            , m_loc_wp(std::move(loc_wp))
+        {
+        }
 
     private:
         Timer* m_owner;
-        std::function<void()> m_callback;
-        Duration m_repeat_every;
-        ScheduledTasks::iterator m_pos;
+        std::weak_ptr<EntryLocator> m_loc_wp;
     };
 
-public:
-    friend struct Token;
 
+public:
     Timer() = default;
 
     template<class FuncT>
-    inline auto schedule(Duration delay, FuncT&& func, Duration every = Duration::zero()) -> Token;
+    auto schedule(Duration delay, FuncT&& func, Duration repeat_interval = Duration::zero()) -> Token
+    {
+        std::unique_lock lock{m_tasks_mutex};
 
-    inline void run();
-    inline bool running() const;
-    inline void request_stop();
-    inline bool stop_requested() const;
+        auto pos = emplace_link(m_tasks, std::move(delay), std::move(func), std::move(repeat_interval));
 
-    inline bool wait_start(Duration timeout);
-    inline bool wait_stop(Duration timeout);
-    inline size_t task_count();
+        if(pos == m_tasks.begin())
+        {
+            lock.unlock();
+            m_tasks_cv.notify_one();
+        }
+
+        return pos->second.get_token(this);
+    }
+
+    void run()
+    {
+        m_stop_req = false;
+
+        std::vector<ScheduledTasks::node_type> nodes;
+
+        while(true)
+        {
+            nodes.clear();
+
+            utils::ScopedAction flipper{
+                [&]() {
+                    std::unique_lock lock{m_run_mutex};
+                    this->m_running = true;
+
+                    lock.unlock();
+                    m_run_cv.notify_all();
+                },
+                [&]() {
+                    std::unique_lock lock{m_run_mutex};
+                    this->m_running = false;
+
+                    lock.unlock();
+                    m_run_cv.notify_all();
+                }
+            };
+
+
+            while(true)
+            {
+                std::unique_lock lock{m_tasks_mutex};
+
+                m_tasks_cv.wait(
+                    lock,
+                    [&] { return m_stop_req || !m_tasks.empty(); }
+                );
+
+                if(m_stop_req)
+                {
+                    return;
+                }
+
+                TimePoint next_until = m_tasks.begin()->first;
+                if( auto st = m_tasks_cv.wait_until(lock, next_until);
+                    st == std::cv_status::timeout )
+                {
+                    // NOTE: extract eligible nodes off m_tasks that at the top
+                    auto [beg, end] = m_tasks.equal_range(next_until);
+                    for(auto i = beg; i != end; ++i)
+                    {
+                        nodes.push_back( m_tasks.extract(i) );
+                    }
+
+                    for (auto& nh : nodes)
+                    {
+                        auto entry = nh.mapped();
+
+                        if(entry.is_repeating())
+                        {
+                            // re-arm internally for next repeat
+                            emplace_link(m_tasks, entry.repeat_interval(), std::move(entry));
+                        }
+                        else
+                        {
+                            // explicitly delete the locator
+                            entry.del_locator();
+                        }
+                    }
+
+                    break;
+                }
+            }
+
+            // invoke callback for each node
+            for (auto& nh : nodes)
+            {
+                // NOTE: callback invoke()ed
+                //       while no locks held
+                nh.mapped().safe_invoke();
+            }
+        }
+    }
+
+
+    bool is_running() const
+    {
+        return m_running;
+    }
+
+    bool wait_start(Duration timeout)
+    {
+        std::unique_lock lock{m_run_mutex};
+
+        return m_run_cv.wait_for(
+                    lock,
+                    timeout,
+                    [&] { return m_running == true; }
+                );
+    }
+
+    void request_stop()
+    {
+        std::unique_lock lock{m_tasks_mutex};
+        m_stop_req = true;
+
+        lock.unlock();
+        m_tasks_cv.notify_one();
+    }
+
+    bool is_stop_requested() const
+    {
+        return m_stop_req;
+    }
+
+    bool wait_stop(Duration timeout)
+    {
+        std::unique_lock lock{m_run_mutex};
+
+        return m_run_cv.wait_for(
+                    lock,
+                    timeout,
+                    [&] { return m_running == false; }
+                );
+    }
+
+    size_t task_count()
+    {
+        std::lock_guard lg{m_tasks_mutex};
+
+        return m_tasks.size();
+    }
+
 
 private:
-    inline auto schedule_entry_locked(Duration delay, std::shared_ptr<Entry>&& entry) -> std::weak_ptr<Entry>;
-    inline auto schedule_entry_direct(Duration delay, std::shared_ptr<Entry>&& entry, const std::unique_lock<std::mutex>&) -> ScheduledTasks::iterator;
-    inline void cancel_locked(Entry& entry);
+    template<class... Args>
+    static auto emplace_link(ScheduledTasks& tasks, Duration delay, Args&&... args) -> ScheduledTasks::iterator
+    {
+        // should be called under lock
 
-private:
+        auto pos = tasks.emplace(
+                std::piecewise_construct,
+                std::forward_as_tuple(Clock::now() + delay),
+                std::forward_as_tuple(std::forward<Args>(args)...)
+            );
+
+        pos->second.link_locator(pos);
+
+        return pos;
+    }
+
+    bool cancel_by(EntryLocator& loc)
+    {
+        std::unique_lock lock{m_tasks_mutex};
+
+        if( loc.is_valid() )
+        {
+            auto&& pos = loc.get_pos();
+
+            const bool notify = pos == m_tasks.begin();
+
+            m_tasks.erase(pos);
+
+            loc.invalidate();
+
+            if (notify)
+            {
+                lock.unlock();
+                m_tasks_cv.notify_one();
+            }
+
+            return true;
+        }
+
+        return false;
+    }
 
 private:
     ScheduledTasks m_tasks;
     std::mutex m_tasks_mutex;
     std::condition_variable m_tasks_cv;
-    bool m_stop_req{false};
+    std::atomic_bool m_stop_req{false};
 
     std::mutex m_run_mutex;
     std::condition_variable m_run_cv;
-    bool m_running{false};
+    std::atomic_bool m_running{false};
 };
 
 
-struct [[nodiscard]] Timer::Token
-{
-public:
-    friend class Timer;
-
-    inline void cancel()
-    {
-        if (auto entry_sp = m_entry_wref.lock())
-        {
-            entry_sp->cancel_self();
-        }
-    }
-
-    Token() = default;
-    Token(const Token&) = delete;
-    Token& operator=(const Token&) = delete;
-
-    Token(Token&&) = default;
-    Token& operator=(Token&&) = default;
-
-    ~Token()
-    {
-        this->cancel();
-    }
-
-    bool expired() const
-    {
-        return m_entry_wref.expired();
-    }
-
-private:
-    explicit
-    Token(std::weak_ptr<Entry> entry_ref)
-        : m_entry_wref(std::move(entry_ref))
-    {
-    }
-
-private:
-    std::weak_ptr<Entry> m_entry_wref;
-};
-
-
-template<class FuncT>
-inline auto Timer::schedule(Duration delay, FuncT&& func, Duration every) -> Token
-{
-    auto entry = std::make_shared<Entry>(
-                        this,
-                        std::forward<FuncT>(func),
-                        std::move(every)
-                    );
-
-    return Token{ schedule_entry_locked(delay, std::move(entry)) };
-}
-
-
-inline void Timer::run()
-{
-    m_stop_req = false;
-
-    std::vector<ScheduledTasks::node_type> nodes;
-
-    while(true)
-    {
-        nodes.clear();
-
-        utils::ScopedAction flipper{
-            [&]() {
-                std::unique_lock lock{m_run_mutex};
-                this->m_running = true;
-
-                lock.unlock();
-                m_run_cv.notify_all();
-            },
-            [&]() {
-                std::unique_lock lock{m_run_mutex};
-                this->m_running = false;
-
-                lock.unlock();
-                m_run_cv.notify_all();
-            }
-        };
-
-
-        while(true)
-        {
-            std::unique_lock lock{m_tasks_mutex};
-
-            m_tasks_cv.wait(
-                lock,
-                [&] { return m_stop_req || !m_tasks.empty(); }
-            );
-
-            if(m_stop_req)
-            {
-                return;
-            }
-
-            TimePoint next_until = m_tasks.begin()->first;
-            if( auto st = m_tasks_cv.wait_until(lock, next_until);
-                st == std::cv_status::timeout )
-            {
-                // NOTE: extract eligible nodes off m_tasks that at the top
-                auto [beg, end] = m_tasks.equal_range(next_until);
-                for(auto i = beg; i != end; ++i)
-                {
-                    nodes.push_back( m_tasks.extract(i) );
-                }
-
-                for (auto& nh : nodes)
-                {
-                    auto entry = nh.mapped();
-
-                    if(entry->is_repeating())
-                    {
-                        // re-arm internally
-                        this->schedule_entry_direct(entry->repeat_duration(), std::move(entry), lock);
-                    }
-                    else
-                    {
-                        entry->link_self(m_tasks.end());
-                    }
-
-                }
-
-                break;
-            }
-        }
-
-        // invoke callback for each node
-        for (auto& nh : nodes)
-        {
-            // NOTE: callback invoke()ed
-            //       while no locks held
-            nh.mapped()->safe_invoke();
-        }
-    }
-}
-
-
-inline bool Timer::running() const
-{
-    return m_running;
-}
-
-
-inline bool Timer::stop_requested() const
-{
-    return m_stop_req;
-}
-
-
-inline void Timer::request_stop()
-{
-    std::unique_lock lock{m_tasks_mutex};
-    m_stop_req = true;
-
-    lock.unlock();
-    m_tasks_cv.notify_one();
-}
-
-
-inline bool Timer::wait_start(Duration timeout)
-{
-    std::unique_lock lock{m_run_mutex};
-    bool b = m_run_cv.wait_for(
-                lock,
-                timeout,
-                [&] { return m_running == true; }
-            );
-    return b;
-}
-
-
-inline bool Timer::wait_stop(Duration timeout)
-{
-    std::unique_lock lock{m_run_mutex};
-    return m_run_cv.wait_for(
-                lock,
-                timeout,
-                [&] { return m_running == false; }
-            );
-}
-
-
-inline size_t Timer::task_count()
-{
-    std::lock_guard g{m_tasks_mutex};
-    return m_tasks.size();
-}
-
-
-inline auto Timer::schedule_entry_locked(Duration delay, std::shared_ptr<Entry>&& entry) -> std::weak_ptr<Entry>
-{
-    std::unique_lock lock{m_tasks_mutex};
-
-    auto pos = schedule_entry_direct(delay, std::move(entry), lock);
-
-    if(pos == m_tasks.begin())
-    {
-        lock.unlock();
-        m_tasks_cv.notify_one();
-    }
-
-    return pos->second;
-}
-
-
-inline auto Timer::schedule_entry_direct(Duration delay, std::shared_ptr<Entry>&& entry, const std::unique_lock<std::mutex>&) -> ScheduledTasks::iterator
-{
-    auto pos = m_tasks.emplace(
-            Clock::now() + delay, std::move(entry)
-        );
-
-    pos->second->link_self(pos);
-
-    return pos;
-}
-
-
-inline void Timer::cancel_locked(Entry& entry)
-{
-    std::unique_lock lock{m_tasks_mutex};
-
-    if( entry.m_pos != m_tasks.end() )
-    {
-        const bool notify = entry.m_pos == m_tasks.begin();
-
-        m_tasks.erase( std::exchange(entry.m_pos, m_tasks.end()) );
-
-        if (notify)
-        {
-            lock.unlock();
-            m_tasks_cv.notify_one();
-        }
-    }
-}
-
-
-template<class FuncT>
-Timer::Entry::Entry(Timer* owner, FuncT&& callback, Duration every)
-    : m_owner{owner}
-    , m_callback{std::forward<FuncT>(callback)}
-    , m_repeat_every{std::move(every)}
-{
-}
-
-
-inline void Timer::Entry::cancel_self()
-{
-    m_owner->cancel_locked(*this);
-}
-
-
-inline void Timer::Entry::link_self(ScheduledTasks::iterator pos)
-{
-    m_pos = pos;
-}
-
-
-inline bool Timer::Entry::is_repeating() const
-{
-    return m_repeat_every != Duration::zero();
-}
-
-
-inline Timer::Duration Timer::Entry::repeat_duration() const
-{
-    return m_repeat_every;
-}
-
-
-inline void Timer::Entry::safe_invoke()
-{
-    try
-    {
-        m_callback();
-    }
-    catch(...)
-    {
-        // swallow exception from callbacks
-    }
-}
 
 }

@@ -48,7 +48,7 @@ void run_basic_test(const TestSpec& test_spec)
         [&]()
         {
             ASSERT_EQ( timer.task_count(), 0u );
-            ASSERT_EQ( timer.running(), false );
+            ASSERT_EQ( timer.is_running(), false );
 
             timer.run();
         }
@@ -63,13 +63,13 @@ void run_basic_test(const TestSpec& test_spec)
 
             thread.join();
 
-            ASSERT_EQ( timer.running(), false );
+            ASSERT_EQ( timer.is_running(), false );
         }
     };
 
     ASSERT_EQ( timer.wait_start(2s), true );
     ASSERT_EQ( timer.task_count(), 0u );
-    ASSERT_EQ( timer.running(), true );
+    ASSERT_EQ( timer.is_running(), true );
 
     const static auto initial_delay = 600ms;
     const static auto repeat_delay  = 200ms;
