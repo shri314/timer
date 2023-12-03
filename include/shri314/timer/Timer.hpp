@@ -8,7 +8,6 @@
 
 #include "shri314/utils/ScopedAction.hpp"
 
-#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <functional>
@@ -87,11 +86,11 @@ private:
     ScheduledTasks m_tasks;
     std::mutex m_tasks_mutex;
     std::condition_variable m_tasks_cv;
-    std::atomic_bool m_stop_req{false};
+    bool m_stop_req{false};
 
     std::mutex m_run_mutex;
     std::condition_variable m_run_cv;
-    std::atomic_bool m_running{false};
+    bool m_running{false};
 };
 
 
@@ -161,8 +160,20 @@ inline void Timer::run()
         nodes.clear();
 
         utils::ScopedAction flipper{
-            [&]() { this->m_running = true; m_run_cv.notify_one(); },
-            [&]() { this->m_running = false; m_run_cv.notify_one(); }
+            [&]() {
+                std::unique_lock lock{m_run_mutex};
+                this->m_running = true;
+
+                lock.unlock();
+                m_run_cv.notify_all();
+            },
+            [&]() {
+                std::unique_lock lock{m_run_mutex};
+                this->m_running = false;
+
+                lock.unlock();
+                m_run_cv.notify_all();
+            }
         };
 
 
@@ -236,7 +247,10 @@ inline bool Timer::stop_requested() const
 
 inline void Timer::request_stop()
 {
+    std::unique_lock lock{m_tasks_mutex};
     m_stop_req = true;
+
+    lock.unlock();
     m_tasks_cv.notify_one();
 }
 
