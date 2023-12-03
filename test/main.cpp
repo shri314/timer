@@ -71,10 +71,10 @@ void run_test(const TestSpec& test_spec)
     ASSERT_EQ( timer.task_count(), 0u );
     ASSERT_EQ( timer.running(), true );
 
-    const static auto schedule_after = 5s;
-    const static auto repeat_every   = 3s;
-    const static auto wait_midway    = 3s;
-    const static auto wait_fire      = 5s;
+    const static auto schedule_after = 600ms;
+    const static auto repeat_every   = 200ms;
+    const static auto wait_midway    = schedule_after / 2;
+    const static auto wait_fire      = 1s;
 
     auto start_time = std::chrono::steady_clock::now();
 
