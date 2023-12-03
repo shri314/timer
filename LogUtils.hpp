@@ -6,20 +6,23 @@
 #include <sstream>
 #include <iostream>
 #include <cassert>
+#include <ctime>
 
 template<class Clock, class Duration>
 std::ostream& operator<<(std::ostream& os, std::chrono::time_point<Clock, Duration> current_time_point)
 {
     using namespace std::chrono;
 
-    const auto current_time {Clock::to_time_t (current_time_point)};
-    const auto current_localtime {*std::localtime (&current_time)};
-    const auto current_time_since_epoch {current_time_point.time_since_epoch()};
-    const auto current_milliseconds {duration_cast<milliseconds> (current_time_since_epoch).count() % 1000};
+    const time_t current_time = Clock::to_time_t(current_time_point);
 
-    std::ostringstream stream;
-    stream << std::put_time(&current_localtime, "%F %T") << "." << std::setw(3) << std::setfill('0') << current_milliseconds;
-    return os << stream.str();
+    auto tm = std::tm{}; localtime_r(&current_time, &tm);
+
+    const auto duration_since_epoch = current_time_point.time_since_epoch();
+    const auto current_milliseconds = duration_cast<milliseconds>(duration_since_epoch).count() % 1000;
+
+    std::ostringstream oss;
+    oss << std::put_time(&tm, "%F %T") << "." << std::setw(3) << std::setfill('0') << current_milliseconds;
+    return os << oss.str();
 }
 
 template<class Rep, class Period>

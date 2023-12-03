@@ -65,7 +65,10 @@ public:
     inline void run();
     inline bool running() const;
     inline void request_stop();
-    inline void stop_wait();
+    inline bool stop_requested() const;
+
+    inline bool wait_start(Duration timeout);
+    inline bool wait_stop(Duration timeout);
     inline size_t task_count();
 
 private:
@@ -77,9 +80,12 @@ private:
 
 private:
     ScheduledTasks m_tasks;
-    std::mutex m_mutex;
-    std::condition_variable m_cv;
+    std::mutex m_tasks_mutex;
+    std::condition_variable m_tasks_cv;
     std::atomic_bool m_stop_req{false};
+
+    std::mutex m_run_mutex;
+    std::condition_variable m_run_cv;
     std::atomic_bool m_running{false};
 };
 
@@ -141,29 +147,37 @@ inline auto Timer::schedule(Duration delay, FuncT&& func, Duration every) -> Tok
 
 inline void Timer::run()
 {
+    m_stop_req = false;
+
     std::vector<ScheduledTasks::node_type> nodes;
 
     while(true)
     {
-        ScopedAction flipper{ [&]() { this->m_running = true;  },
-                              [&]() { this->m_running = false; } };
+        ScopedAction flipper{
+            [&]() { this->m_running = true; m_run_cv.notify_one(); },
+            [&]() { this->m_running = false; m_run_cv.notify_one(); }
+        };
+
 
         while(true)
         {
-            std::unique_lock lock{m_mutex};
+            std::unique_lock lock{m_tasks_mutex};
 
-            m_cv.wait(
+            m_tasks_cv.wait(
                 lock,
                 [&] { return m_stop_req || !m_tasks.empty(); }
             );
 
             if(m_stop_req)
+            {
                 return;
+            }
 
             TimePoint next_until = m_tasks.begin()->first;
-            if( auto st = m_cv.wait_until(lock, next_until);
+            if( auto st = m_tasks_cv.wait_until(lock, next_until);
                 st == std::cv_status::timeout )
             {
+                // NOTE: extract eligible nodes off m_tasks that at the top
                 auto [beg, end] = m_tasks.equal_range(next_until);
                 for(auto i = beg; i != end; ++i)
                 {
@@ -206,42 +220,59 @@ inline bool Timer::running() const
 }
 
 
-inline void Timer::request_stop()
+inline bool Timer::stop_requested() const
 {
-    m_stop_req = true;
-    m_cv.notify_one();
+    return m_stop_req;
 }
 
 
-inline void Timer::stop_wait()
+inline void Timer::request_stop()
 {
-    request_stop();
+    m_stop_req = true;
+    m_tasks_cv.notify_one();
+}
 
-    std::unique_lock lock{m_mutex};
-    m_cv.wait(
-        lock,
-        [&] { return m_running == true; }
-    );
+
+inline bool Timer::wait_start(Duration timeout)
+{
+    std::unique_lock lock{m_run_mutex};
+    bool b = m_run_cv.wait_for(
+                lock,
+                timeout,
+                [&] { return m_running == true; }
+            );
+    return b;
+}
+
+
+inline bool Timer::wait_stop(Duration timeout)
+{
+    std::unique_lock lock{m_run_mutex};
+    return m_run_cv.wait_for(
+                lock,
+                timeout,
+                [&] { return m_running == false; }
+            );
 }
 
 
 inline size_t Timer::task_count()
 {
-    std::lock_guard g{m_mutex};
+    std::lock_guard g{m_tasks_mutex};
     return m_tasks.size();
 }
 
 
 inline auto Timer::schedule_entry_locked(Duration delay, std::shared_ptr<Entry>&& entry) -> std::weak_ptr<Entry>
 {
-    std::unique_lock lock{m_mutex};
+    std::unique_lock lock{m_tasks_mutex};
 
     auto pos = schedule_entry_direct(delay, std::move(entry), lock);
 
     if(pos == m_tasks.begin())
     {
         lock.unlock();
-        m_cv.notify_one();
+        m_tasks_cv.notify_one();
     }
 
     return pos->second;
@@ -262,7 +293,7 @@ inline auto Timer::schedule_entry_direct(Duration delay, std::shared_ptr<Entry>&
 
 inline void Timer::cancel_at_locked(ScheduledTasks::iterator pos)
 {
-    std::unique_lock lock{m_mutex};
+    std::unique_lock lock{m_tasks_mutex};
 
     const bool notify = pos == m_tasks.begin();
 
@@ -271,7 +302,7 @@ inline void Timer::cancel_at_locked(ScheduledTasks::iterator pos)
     if (notify)
     {
         lock.unlock();
-        m_cv.notify_one();
+        m_tasks_cv.notify_one();
     }
 }
 

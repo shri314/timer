@@ -12,34 +12,32 @@
 #include <thread>
 #include <iostream>
 
-enum class TEST_CASE
+struct TestSpec
 {
-    ONE_SHOT,
-    ONE_SHOT_CANCEL,
-    REPEATING,
-    REPEATING_CANCEL,
+    const char* description;
+    bool do_cancel;
+    bool do_repeat;
+
+    friend std::ostream& operator<<(std::ostream& os, const TestSpec& ts)
+    {
+        std::ostringstream oss;
+        oss << std::boolalpha;
+        oss << "{"
+            <<    "desc:" << ts.description << ","
+            <<    "do_cancel:" << ts.do_cancel << ","
+            <<    "do_repeat:" << ts.do_repeat
+            << "}";
+
+        return os << oss.str();
+    }
 };
 
 
-std::ostream& operator<<(std::ostream& os, TEST_CASE tc)
-{
-    switch(tc)
-    {
-        case TEST_CASE::ONE_SHOT:         return os << "TEST_CASE::ONE_SHOT";
-        case TEST_CASE::ONE_SHOT_CANCEL:  return os << "TEST_CASE::ONE_SHOT_CANCEL";
-        case TEST_CASE::REPEATING:        return os << "TEST_CASE::REPEATING";
-        case TEST_CASE::REPEATING_CANCEL: return os << "TEST_CASE::REPEATING_CANCEL";
-    }
-
-    return os << "TEST_CASE::?";
-}
-
-
-void test_one_shot(TEST_CASE test_case)
+void run_test(const TestSpec& test_spec)
 {
     using namespace std::literals::chrono_literals;
 
-    auto test_tracer = FancyTracer(test_case);
+    auto test_tracer = FancyTracer(test_spec);
 
     DataChannel<std::chrono::time_point<std::chrono::steady_clock>> ch;
 
@@ -60,68 +58,63 @@ void test_one_shot(TEST_CASE test_case)
         {
             timer.request_stop();
 
+            ASSERT_EQ( timer.wait_stop(2s), true );
+
             thread.join();
 
-            ASSERT_EQ(timer.running(), false);
+            ASSERT_EQ( timer.running(), false );
         }
     };
 
-    std::this_thread::sleep_for(1s);
+    ASSERT_EQ( timer.wait_start(2s), true );
     ASSERT_EQ( timer.task_count(), 0u );
     ASSERT_EQ( timer.running(), true );
 
-    const static auto schedule_after = 5000ms;
-    const static auto repeat_every   = 3000ms;
-    const static auto wait_midway    = 3000ms;
-    const static auto wait_fire      = 5000ms;
+    const static auto schedule_after = 5s;
+    const static auto repeat_every   = 3s;
+    const static auto wait_midway    = 3s;
+    const static auto wait_fire      = 5s;
 
     auto start_time = std::chrono::steady_clock::now();
 
     auto tok = [&]() -> Timer::Token
     {
-        switch(test_case)
+        if(test_spec.do_repeat)
         {
-            case TEST_CASE::ONE_SHOT:
-                [[std::fallthrough]];
+            return timer.schedule(
+                    schedule_after,
+                    [&ch]() mutable
+                    {
+                        auto fire_time = std::chrono::steady_clock::now();
 
-            case TEST_CASE::ONE_SHOT_CANCEL:
-                return timer.schedule(
-                        schedule_after,
-                        [&ch]() mutable
-                        {
-                            auto fire_time = std::chrono::steady_clock::now();
+                        auto trace = SimpleTracer("TASK EXEC");
 
-                            auto trace = SimpleTracer("TASK EXEC");
-
-                            ch.post_data(fire_time);
-                        }
-                    );
-
-            case TEST_CASE::REPEATING:
-                [[std::fallthrough]];
-
-            case TEST_CASE::REPEATING_CANCEL:
-                return timer.schedule(
-                        schedule_after,
-                        [&ch]() mutable
-                        {
-                            auto fire_time = std::chrono::steady_clock::now();
-
-                            auto trace = SimpleTracer("TASK EXEC");
-
-                            ch.post_data(fire_time);
-                        },
-                        repeat_every
-                    );
+                        ch.post_data(fire_time);
+                    },
+                    repeat_every
+                );
         }
+        else
+        {
+            return timer.schedule(
+                    schedule_after,
+                    [&ch]() mutable
+                    {
+                        auto fire_time = std::chrono::steady_clock::now();
 
-        return {};
+                        auto trace = SimpleTracer("TASK EXEC");
+
+                        ch.post_data(fire_time);
+                    }
+                );
+        }
     }();
 
     {
         ASSERT_EQ( tok.expired(), false );
 
-        TRACE(" => Task Scheduled");
+        TRACE(" => Task Scheduled to run after ", schedule_after);
+
         ASSERT_EQ( timer.task_count(), 1u );
     }
 
@@ -146,118 +139,81 @@ void test_one_shot(TEST_CASE test_case)
         }
     };
 
-    switch(test_case)
+    auto wait_until_data = [&](const char* desc, size_t th, auto duration)
     {
-        case TEST_CASE::ONE_SHOT:
-            {
-                auto&& [b, exec_times] = ch.wait_until_data(1u, wait_midway);
+        TRACE(" => ", desc, " wait beg, for: ", duration, ", count_threshold: ", th);
 
-                TRACE(" => Midway Wait1");
+        auto result = ch.wait_until_data(th, wait_midway);
 
-                ASSERT_EQ( b, false ); // timed out
-                ASSERT_EQ( exec_times.size(), 0u );
-                ASSERT_EQ( timer.task_count(), 1u );
-                ASSERT_EQ( tok.expired(), false );
-            }
+        TRACE(" => ", desc, " wait end, got_data: ", result.first);
 
-            {
-                auto&& [b, exec_times] = ch.wait_until_data(1u, wait_fire);
+        return result;
+    };
 
-                TRACE(" => Final Wait");
+    (void)wait_until_data;
 
-                ASSERT_EQ( b, true ); // not timed out
-                ASSERT_EQ( exec_times.size(), 1u );
-                ASSERT_EQ( timer.task_count(), 0u );
-                ASSERT_EQ( tok.expired(), true );
+    {
+        auto&& [got_data, exec_times] = wait_until_data("midway", 1u, wait_midway);
 
-                check_exec_times(start_time, exec_times);
-            }
+        ASSERT_EQ( got_data,           false );
+        ASSERT_EQ( exec_times.size(),  0u    );
+        ASSERT_EQ( timer.task_count(), 1u    );
+        ASSERT_EQ( tok.expired(),      false );
+    }
 
-            break;
+    if (test_spec.do_cancel)
+    {
+        tok.cancel();
+    }
 
-        case TEST_CASE::ONE_SHOT_CANCEL:
-                [[std::fallthrough]];
+    {
+        auto&& [got_data, exec_times] = wait_until_data("first", 1u, wait_fire);
 
-        case TEST_CASE::REPEATING_CANCEL:
-            {
-                auto&& [b, exec_times] = ch.wait_until_data(1u, wait_midway);
+        ASSERT_EQ( got_data,           test_spec.do_cancel ? false : true );
+        ASSERT_EQ( exec_times.size(),  test_spec.do_cancel ? 0u    : 1u );
+        ASSERT_EQ( timer.task_count(), test_spec.do_cancel ? 0u    : (test_spec.do_repeat ? 1u : 0u) );
+        ASSERT_EQ( tok.expired(),      test_spec.do_cancel ? true  : (test_spec.do_repeat ? false : true) );
 
-                TRACE(" => Midway Wait1");
+        check_exec_times(start_time, exec_times);
+    }
 
-                ASSERT_EQ( b, false ); // timed out
-                ASSERT_EQ( exec_times.size(), 0u );
-                ASSERT_EQ( timer.task_count(), 1u );
-                ASSERT_EQ( tok.expired(), false );
-            }
+    if (!test_spec.do_cancel && test_spec.do_repeat)
+    {
+        const size_t extra_reps = 3u;
 
-            tok.cancel();
+        for(size_t i = 0u; i < extra_reps; ++i)
+        {
+            auto&& [got_data, exec_times] = wait_until_data("next", i + 2u, wait_fire);
 
-            {
-                auto&& [b, exec_times] = ch.wait_until_data(1u, wait_fire);
+            ASSERT_EQ( got_data,           true   );
+            ASSERT_EQ( exec_times.size(),  i + 2u );
+            ASSERT_EQ( timer.task_count(), 1u     );
+            ASSERT_EQ( tok.expired(),      false  );
+        }
 
-                TRACE(" => Final Wait");
+        // stop yourself from running for ever
+        tok.cancel();
 
-                ASSERT_EQ( b, false ); // timed out
-                ASSERT_EQ( timer.task_count(), 0u );
-                ASSERT_EQ( exec_times.size(), 0u );
-                ASSERT_EQ( tok.expired(), true );
+        {
+            auto&& [got_data, exec_times] = wait_until_data("last", extra_reps + 2u, wait_fire);
 
-                check_exec_times(start_time, exec_times);
-            }
+            ASSERT_EQ( got_data,           false           );
+            ASSERT_EQ( exec_times.size(),  extra_reps + 1u );
+            ASSERT_EQ( timer.task_count(), 0u              );
+            ASSERT_EQ( tok.expired(),      true            );
 
-            break;
-
-        case TEST_CASE::REPEATING:
-            {
-                auto&& [b, exec_times] = ch.wait_until_data(1u, 3s);
-
-                TRACE(" => Midway Wait1");
-
-                ASSERT_EQ( b, false );
-                ASSERT_EQ( exec_times.size(), 0u );
-                ASSERT_EQ( timer.task_count(), 1u );
-                ASSERT_EQ( tok.expired(), false );
-            }
-
-            size_t do_reps = 3u;
-            for(size_t i = 0u; i < do_reps; ++i)
-            {
-                auto&& [b, exec_times] = ch.wait_until_data(i + 1u, wait_fire);
-
-                TRACE(" => Next Wait: ", i + 1u);
-
-                ASSERT_EQ( b, true ); // not timed out
-                ASSERT_EQ( exec_times.size(), i + 1u );
-                ASSERT_EQ( timer.task_count(), 1u );
-                ASSERT_EQ( tok.expired(), false );
-            }
-
-            tok.cancel();
-
-            {
-                auto&& [b, exec_times] = ch.wait_until_data(do_reps + 1u, wait_fire);
-
-                TRACE(" => Final Wait");
-
-                ASSERT_EQ( b, false ); // timed out
-                ASSERT_EQ( exec_times.size(), do_reps );
-                ASSERT_EQ( timer.task_count(), 0u );
-                ASSERT_EQ( tok.expired(), true );
-
-                check_exec_times(start_time, exec_times);
-            }
-
-            break;
+            check_exec_times(start_time, exec_times);
+        }
     }
 }
 
 
 int main()
 {
-    test_one_shot(TEST_CASE::ONE_SHOT);
-    test_one_shot(TEST_CASE::ONE_SHOT_CANCEL);
-    test_one_shot(TEST_CASE::REPEATING);
-    test_one_shot(TEST_CASE::REPEATING_CANCEL);
+    run_test({"ONE_SHOT", false, false});
+    run_test({"ONE_SHOT", true, false});
+    run_test({"REPEATING", false, true});
+    run_test({"REPEATING", true, true});
 
     return 0;
 }
