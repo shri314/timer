@@ -49,11 +49,13 @@ private:
         inline void link_self(ScheduledTasks::iterator pos);
         inline void cancel_self();
         inline void safe_invoke();
+        inline bool is_repeating() const;
+        Duration repeat_duration() const;
 
     private:
         Timer* m_owner;
         std::function<void()> m_callback;
-        Duration m_every;
+        Duration m_repeat_every;
         ScheduledTasks::iterator m_pos;
     };
 
@@ -77,7 +79,7 @@ public:
 private:
     inline auto schedule_entry_locked(Duration delay, std::shared_ptr<Entry>&& entry) -> std::weak_ptr<Entry>;
     inline auto schedule_entry_direct(Duration delay, std::shared_ptr<Entry>&& entry, const std::unique_lock<std::mutex>&) -> ScheduledTasks::iterator;
-    inline void cancel_at_locked(ScheduledTasks::iterator pos);
+    inline void cancel_locked(Entry& entry);
 
 private:
 
@@ -156,6 +158,8 @@ inline void Timer::run()
 
     while(true)
     {
+        nodes.clear();
+
         utils::ScopedAction flipper{
             [&]() { this->m_running = true; m_run_cv.notify_one(); },
             [&]() { this->m_running = false; m_run_cv.notify_one(); }
@@ -184,31 +188,32 @@ inline void Timer::run()
                 auto [beg, end] = m_tasks.equal_range(next_until);
                 for(auto i = beg; i != end; ++i)
                 {
-                    nodes.push_back( std::move(m_tasks.extract(i)) );
+                    nodes.push_back( m_tasks.extract(i) );
                 }
 
-                // NOTE: re-arm as required
-                for(auto& nh : nodes)
+                for (auto& nh : nodes)
                 {
                     auto entry = nh.mapped();
 
-                    if(entry->m_every != Duration::zero())
+                    if(entry->is_repeating())
                     {
-                        this->schedule_entry_direct(entry->m_every, std::move(entry), lock);
+                        // re-arm internally
+                        this->schedule_entry_direct(entry->repeat_duration(), std::move(entry), lock);
                     }
+                    else
+                    {
+                        entry->link_self(m_tasks.end());
+                    }
+
                 }
 
                 break;
             }
         }
 
-        // clear all nodes
-        while(!nodes.empty())
+        // invoke callback for each node
+        for (auto& nh : nodes)
         {
-            auto nh = std::move(nodes.back());
-
-            nodes.pop_back();
-
             // NOTE: callback invoke()ed
             //       while no locks held
             nh.mapped()->safe_invoke();
@@ -294,18 +299,21 @@ inline auto Timer::schedule_entry_direct(Duration delay, std::shared_ptr<Entry>&
 }
 
 
-inline void Timer::cancel_at_locked(ScheduledTasks::iterator pos)
+inline void Timer::cancel_locked(Entry& entry)
 {
     std::unique_lock lock{m_tasks_mutex};
 
-    const bool notify = pos == m_tasks.begin();
-
-    m_tasks.erase(pos);
-
-    if (notify)
+    if( entry.m_pos != m_tasks.end() )
     {
-        lock.unlock();
-        m_tasks_cv.notify_one();
+        const bool notify = entry.m_pos == m_tasks.begin();
+
+        m_tasks.erase( std::exchange(entry.m_pos, m_tasks.end()) );
+
+        if (notify)
+        {
+            lock.unlock();
+            m_tasks_cv.notify_one();
+        }
     }
 }
 
@@ -314,20 +322,32 @@ template<class FuncT>
 Timer::Entry::Entry(Timer* owner, FuncT&& callback, Duration every)
     : m_owner{owner}
     , m_callback{std::forward<FuncT>(callback)}
-    , m_every{std::move(every)}
+    , m_repeat_every{std::move(every)}
 {
 }
 
 
 inline void Timer::Entry::cancel_self()
 {
-    m_owner->cancel_at_locked(m_pos);
+    m_owner->cancel_locked(*this);
 }
 
 
 inline void Timer::Entry::link_self(ScheduledTasks::iterator pos)
 {
     m_pos = pos;
+}
+
+
+inline bool Timer::Entry::is_repeating() const
+{
+    return m_repeat_every != Duration::zero();
+}
+
+
+inline Timer::Duration Timer::Entry::repeat_duration() const
+{
+    return m_repeat_every;
 }
 
 

@@ -12,6 +12,7 @@ all: test/main.cpp
 	$(call compile_run,.address,-g3   -fsanitize=address  )
 	$(call compile_run,.thread,-g3    -fsanitize=thread   )
 	$(call compile_run,.undefined,-g3 -fsanitize=undefined)
+	@echo PASSED
 
 clean:
 	rm -f out/a.out out/a.out.*

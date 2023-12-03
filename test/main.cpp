@@ -34,7 +34,7 @@ struct TestSpec
 };
 
 
-void run_test(const TestSpec& test_spec)
+void run_basic_test(const TestSpec& test_spec)
 {
     using namespace std::literals::chrono_literals;
 
@@ -71,10 +71,10 @@ void run_test(const TestSpec& test_spec)
     ASSERT_EQ( timer.task_count(), 0u );
     ASSERT_EQ( timer.running(), true );
 
-    const static auto schedule_after = 600ms;
-    const static auto repeat_every   = 200ms;
-    const static auto wait_midway    = schedule_after / 2;
-    const static auto wait_fire      = 1s;
+    const static auto initial_delay = 600ms;
+    const static auto repeat_delay  = 200ms;
+    const static auto wait_midway   = initial_delay / 2;
+    const static auto wait_fire     = 1s;
 
     auto start_time = std::chrono::steady_clock::now();
 
@@ -83,7 +83,7 @@ void run_test(const TestSpec& test_spec)
         if(test_spec.do_repeat)
         {
             return timer.schedule(
-                    schedule_after,
+                    initial_delay,
                     [&ch]() mutable
                     {
                         auto fire_time = std::chrono::steady_clock::now();
@@ -92,13 +92,13 @@ void run_test(const TestSpec& test_spec)
 
                         ch.post_data(fire_time);
                     },
-                    repeat_every
+                    repeat_delay
                 );
         }
         else
         {
             return timer.schedule(
-                    schedule_after,
+                    initial_delay,
                     [&ch]() mutable
                     {
                         auto fire_time = std::chrono::steady_clock::now();
@@ -114,7 +114,7 @@ void run_test(const TestSpec& test_spec)
     {
         ASSERT_EQ( tok.expired(), false );
 
-        TRACE(" => Task Scheduled to run after ", schedule_after);
+        TRACE(" => Task Scheduled to run after ", initial_delay);
 
         ASSERT_EQ( timer.task_count(), 1u );
     }
@@ -128,14 +128,14 @@ void run_test(const TestSpec& test_spec)
                 auto t1 = start_time;
                 auto t2 = exec_times[i];
 
-                ASSERT_GE( t2 - t1, schedule_after );
+                ASSERT_GE( t2 - t1, initial_delay );
             }
             else
             {
                 auto t1 = exec_times[i - 1];
                 auto t2 = exec_times[i];
 
-                ASSERT_GE( t2 - t1, repeat_every );
+                ASSERT_GE( t2 - t1, repeat_delay );
             }
         }
     };
@@ -208,13 +208,82 @@ void run_test(const TestSpec& test_spec)
     }
 }
 
+void run_seq_big_small()
+{
+    using namespace std::literals::chrono_literals;
+
+    auto test_tracer = FancyTracer("seq_big_small");
+
+    utils::DataChannel<
+            std::pair<std::string, std::chrono::time_point<std::chrono::steady_clock>>
+        > ch;
+
+    shri314::timer::Timer timer;
+
+    std::thread th{ [&](){ timer.run(); } };
+
+    shri314::utils::ScopedExit ex{
+        [&]()
+        {
+            timer.request_stop();
+
+            ASSERT_EQ( timer.wait_stop(5s), true );
+
+            th.join();
+        }
+
+    };
+
+    ASSERT_EQ( timer.wait_start(5s), true );
+
+    auto start_time = std::chrono::steady_clock::now();
+
+    const static auto initial_big_delay1   = 600ms;
+    const static auto initial_small_delay2 = 200ms;
+
+    auto tok1 = timer.schedule(
+                    initial_big_delay1,
+                    [&ch]() mutable
+                    {
+                        auto fire_time = std::chrono::steady_clock::now();
+
+                        auto trace = SimpleTracer("T1 TASK EXEC");
+
+                        ch.post_data(std::make_pair("T1", fire_time));
+                    }
+                );
+
+    auto tok2 = timer.schedule(
+                    initial_small_delay2,
+                    [&ch]() mutable
+                    {
+                        auto fire_time = std::chrono::steady_clock::now();
+
+                        auto trace = SimpleTracer("T2 TASK EXEC");
+
+                        ch.post_data(std::make_pair("T2", fire_time));
+                    }
+                );
+
+    auto&& [got_data, data] = ch.wait_until_data(2u, 15s);
+
+    ASSERT_EQ( got_data, true );
+    ASSERT_EQ( data.size(), 2u );
+    ASSERT_EQ( data[0].first, "T2" );
+    ASSERT_GE( data[0].second - start_time, initial_small_delay2 );
+    ASSERT_EQ( data[1].first, "T1" );
+    ASSERT_GE( data[1].second - start_time, initial_big_delay1 );
+}
+
 
 int main()
 {
-    run_test({"ONE_SHOT", false, false});
-    run_test({"ONE_SHOT", true, false});
-    run_test({"REPEATING", false, true});
-    run_test({"REPEATING", true, true});
+    run_basic_test({"ONE_SHOT", false, false});
+    run_basic_test({"ONE_SHOT", true, false});
+    run_basic_test({"REPEATING", false, true});
+    run_basic_test({"REPEATING", true, true});
+
+    run_seq_big_small();
 
     return 0;
 }
