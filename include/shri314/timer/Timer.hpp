@@ -1,12 +1,12 @@
 /**
- * Timer
+ * shri314::timer::Timer
  *
  * MIT License
  * Copyright (c) 2023 Shriram V
  */
 #pragma once
 
-#include "ScopedAction.hpp"
+#include "shri314/utils/ScopedAction.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -15,6 +15,9 @@
 #include <map>
 #include <memory>
 #include <mutex>
+
+namespace shri314::timer
+{
 
 struct Timer
 {
@@ -153,7 +156,7 @@ inline void Timer::run()
 
     while(true)
     {
-        ScopedAction flipper{
+        utils::ScopedAction flipper{
             [&]() { this->m_running = true; m_run_cv.notify_one(); },
             [&]() { this->m_running = false; m_run_cv.notify_one(); }
         };
@@ -338,4 +341,6 @@ inline void Timer::Entry::safe_invoke()
     {
         // swallow exception from callbacks
     }
+}
+
 }

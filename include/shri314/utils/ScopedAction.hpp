@@ -1,5 +1,5 @@
 /**
- * ScopedAction
+ * shri314::utils::ScopedAction
  *
  * MIT License
  * Copyright (c) 2023 Shriram V
@@ -8,6 +8,9 @@
 
 #include <exception>
 #include <utility>
+
+namespace shri314::utils
+{
 
 template<class ExitFuncT>
 struct ScopedAction
@@ -48,3 +51,5 @@ struct ScopedAction
 private:
     ExitFuncT m_exit_func;
 };
+
+}

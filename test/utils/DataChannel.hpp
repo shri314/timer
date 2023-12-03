@@ -1,5 +1,5 @@
 /**
- * DataChannel
+ * utils::DataChannel
  *
  * MIT License
  * Copyright (c) 2023 Shriram V
@@ -10,6 +10,9 @@
 #include <mutex>
 #include <utility>
 #include <vector>
+
+namespace utils
+{
 
 template<class T>
 struct DataChannel
@@ -47,3 +50,5 @@ private:
     std::condition_variable m_cv;
     std::vector<T> m_data_seq;
 };
+
+}

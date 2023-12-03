@@ -1,4 +1,12 @@
-#include "ScopedAction.hpp"
+/**
+ * utils::LogUtils
+ *
+ * MIT License
+ * Copyright (c) 2023 Shriram V
+ */
+#pragma once
+
+#include "shri314/utils/ScopedAction.hpp"
 
 #include <chrono>
 #include <iomanip>
@@ -78,7 +86,7 @@ void TRACE(T&&... t)
 template<class T>
 auto FancyTracer(T x)
 {
-    return ScopedAction{
+    return shri314::utils::ScopedAction{
         [x]()
         {
             TRACE("-----------------------------------------------");
@@ -96,7 +104,7 @@ auto FancyTracer(T x)
 
 auto SimpleTracer(std::string name)
 {
-    return ScopedAction{
+    return shri314::utils::ScopedAction{
         [name]() { TRACE(" => ", name, " BEG"); },
         [name]() { TRACE(" => ", name, " END"); }
     };

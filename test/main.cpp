@@ -4,10 +4,11 @@
  * MIT License
  * Copyright (c) 2023 Shriram V
  */
-#include "Timer.hpp"
-#include "DataChannel.hpp"
-#include "ScopedExit.hpp"
-#include "LogUtils.hpp"
+#include "shri314/timer/Timer.hpp"
+#include "shri314/utils/ScopedExit.hpp"
+
+#include "utils/DataChannel.hpp"
+#include "utils/LogUtils.hpp"
 
 #include <thread>
 #include <iostream>
@@ -39,9 +40,9 @@ void run_test(const TestSpec& test_spec)
 
     auto test_tracer = FancyTracer(test_spec);
 
-    DataChannel<std::chrono::time_point<std::chrono::steady_clock>> ch;
+    utils::DataChannel<std::chrono::time_point<std::chrono::steady_clock>> ch;
 
-    Timer timer;
+    shri314::timer::Timer timer;
 
     std::thread thread{
         [&]()
@@ -53,7 +54,7 @@ void run_test(const TestSpec& test_spec)
         }
     };
 
-    ScopedExit ex{
+    shri314::utils::ScopedExit ex{
         [&]()
         {
             timer.request_stop();
@@ -77,7 +78,7 @@ void run_test(const TestSpec& test_spec)
 
     auto start_time = std::chrono::steady_clock::now();
 
-    auto tok = [&]() -> Timer::Token
+    auto tok = [&]()
     {
         if(test_spec.do_repeat)
         {
