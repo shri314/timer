@@ -24,8 +24,10 @@ This will cause the function provided to be executed after 5sec, as long as:
 1. `token.request_stop()` has not been called.
 1. the callback has not been already executed.
 
-The `token` object can help keep the registration alive, as long as the object
-is alive. it automatically issues a cancel() if it goes out of scope.
+The `token` object helps keep the registration alive. when token goes out of
+scope, it automatically issues a cancel(). Before the callback, the token
+object can be used to cancel the registration. After the callback the token
+object when queried will indicate that it has expired.
 
 *Scheduling a repeating function:*
 
@@ -33,7 +35,8 @@ is alive. it automatically issues a cancel() if it goes out of scope.
                                                                          ^^^
 
 The behavior is same as previous call, except, that at after the first call
-subsequently, the same callback will be called every 10s.
+subsequently, the same function will be called every 10s. Unlike the one shot
+case, the token object will continue to indicate that is has not expired.
 
 
 #Prequisites to build:
