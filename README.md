@@ -39,7 +39,8 @@ subsequently, the same function will be called every 10s. Unlike the one shot
 case, the token object will continue to indicate that is has not expired.
 
 
-#Prequisites to build:
+# Prequisites to build:
+
  - A C++17 compliant compiler.
     - Tested with g++ 9.4.0       (Ubuntu20.04)
     - Tested with clang++ 14.0.0  (Ubuntu22.04)
