@@ -3,37 +3,37 @@
 This is a C++ header only timer library - that allows scheduling of functions
 to be excecuted at a future point in time.
 
-   #include <shri314/timer/Timer.hpp>
+*Creating the timer:*
 
-   *Creating the timer:*
+    #include <shri314/timer/Timer.hpp>
 
-       shri314::timer::Timer t;
+    shri314::timer::Timer t;
 
-   On one thread one needs to call `t.run()`. This function block until someone stop
-   the timer using a `t.request_stop()`
+One one needs to call `t.run()` on a separate thread. This function blocks
+until someone stops the timer using a `t.request_stop()`.
 
-   *Scheduling a one-shot function:*
+*Scheduling a one-shot function:*
 
-        auto token = t.schedule( 5s, []() { std::cout << "hello timer\n"; } );
-                                 ^^
+    auto token = t.schedule( 5s, []() { std::cout << "hello timer\n"; } );
+                             ^^
 
-   This will cause the function provided to be executed after 5sec, as long as:
-    1. `t.run()` is stil running
-    1. `token` is kept alive and is in scope (not destroyed)
-    1. `token.cancel()` has not been called.
-    1. `token.request_stop()` has not been called.
-    1. the callback has not been already executed.
+This will cause the function provided to be executed after 5sec, as long as:
+1. `t.run()` is stil running
+1. `token` is kept alive and is in scope (not destroyed)
+1. `token.cancel()` has not been called.
+1. `token.request_stop()` has not been called.
+1. the callback has not been already executed.
 
-   The `token` object can help keep the registration alive, as long as the
-   object is alive. it automatically issues a cancel() if it goes out of scope.
+The `token` object can help keep the registration alive, as long as the object
+is alive. it automatically issues a cancel() if it goes out of scope.
 
-   *Scheduling a repeating function:*
+*Scheduling a repeating function:*
 
-        auto token = t.schedule( 5s, []() { std::cout << "hello timer\n"; }, 10s );
-                                                                             ^^^
+    auto token = t.schedule( 5s, []() { std::cout << "hello timer\n"; }, 10s );
+                                                                         ^^^
 
-    The behavior is same as previous call, except, that at after the first call
-    subsequently, the same callback will be called every 10s.
+The behavior is same as previous call, except, that at after the first call
+subsequently, the same callback will be called every 10s.
 
 
 #Prequisites to build:
