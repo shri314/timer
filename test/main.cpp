@@ -151,8 +151,6 @@ void run_basic_test(const TestSpec& test_spec)
         return result;
     };
 
-    (void)wait_until_data;
-
     {
         auto&& [got_data, exec_times] = wait_until_data("midway", 1u, wait_midway);
 
