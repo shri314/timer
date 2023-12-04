@@ -196,6 +196,12 @@ public:
 
 public:
     Timer() = default;
+    ~Timer() = default;
+
+    Timer(const Timer&) = delete;
+    Timer(Timer&&) = delete;
+    Timer& operator=(const Timer&) = delete;
+    Timer& operator=(Timer&&) = delete;
 
     template<class FuncT>
     auto schedule(Duration delay, FuncT&& func, Duration repeat_interval = Duration::zero()) -> Token

@@ -24,8 +24,8 @@ target_link_options(a.out.asan    PRIVATE "-fsanitize=address")
 #target_link_options(a.out.msan    PRIVATE "-fsanitize=memory")
 
 add_executable(a.out.tsan         ${SRCS})
-target_compile_options(a.out.tsan PRIVATE "-fsanitize=thread")
-target_link_options(a.out.tsan    PRIVATE "-fsanitize=thread")
+target_compile_options(a.out.tsan PRIVATE "-g3" "-fsanitize=thread")
+target_link_options(a.out.tsan    PRIVATE "-g3" "-fsanitize=thread")
 
 add_executable(a.out.usan         ${SRCS})
 target_compile_options(a.out.usan PRIVATE "-fsanitize=undefined")
