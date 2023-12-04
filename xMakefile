@@ -1,3 +1,7 @@
+# Manual Makefile
+#
+# make -f xMakefile
+
 define compile_run
 	@echo ---------
 	@mkdir -p out
